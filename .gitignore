@@ -1,0 +1,8 @@
+data/raw/ 
+data/processed/ 
+data/outputs/ 
+*.tif 
+*.nc 
+*.shp 
+.ipynb_checkpoints/ 
+__pycache__/ 
