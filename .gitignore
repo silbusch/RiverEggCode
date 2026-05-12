@@ -6,3 +6,4 @@ data/outputs/
 *.shp 
 .ipynb_checkpoints/ 
 __pycache__/ 
+src/config.py
