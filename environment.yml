@@ -1,16 +1,19 @@
 name: river_egg
 channels:
-  - https://repo.anaconda.com/pkgs/main
-  - https://repo.anaconda.com/pkgs/r
-  - https://repo.anaconda.com/pkgs/msys2
+  - conda-forge
 dependencies:
   - python=3.11
-  - folium
   - geopandas
-  - ipykernel
-  - jupyter
-  - matplotlib
-  - numpy
-  - pandas
   - rasterio
-prefix: C:\Users\Duck\anaconda3\envs\river_egg
+  - jupyter
+  - ipykernel
+  - matplotlib
+  - folium
+  - pandas
+  - numpy
+  - fiona
+  - contextily
+  - ipywidgets
+  - mapclassify
+  - geopy
+  - scikit-learn
