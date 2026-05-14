@@ -7,3 +7,4 @@ data/outputs/
 .ipynb_checkpoints/ 
 __pycache__/ 
 src/config_paths.py
+src/config_example

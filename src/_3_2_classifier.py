@@ -1,4 +1,4 @@
-# src/classifier.py
+# src/_3_2_classifier.py
 # ============================================================
 # EGG CODE CLASSIFICATION FUNCTIONS
 # Each function takes a GeoDataFrame and returns a new column.
@@ -12,7 +12,7 @@ import sys
 import os
 
 sys.path.append(os.path.join(os.path.dirname(__file__)))
-from config import (
+from _00_config import (
     SLOPE_BREAKS, SLOPE_LABELS,
     PLANFORM_SINGLE_MAX, PLANFORM_BRAIDED_MAX,
     QT_BREAKS, QT_LABELS,

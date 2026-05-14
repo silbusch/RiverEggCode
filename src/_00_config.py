@@ -1,7 +1,15 @@
 # =======================================================================================
-# EGG CODE CLASSIFICATION THRESHOLDS ----> NOTE: EXAMPLE for clipped SWORD
+# 2.3 Extracting/Sampling raster values to SWORD reaches
 # =======================================================================================
+# RASTER JOIN – width-based buffer (m)
+RASTER_BUFFER_OFFSET_M  = 50  # fixed offset for SWORD positional uncertainty
+RASTER_BUFFER_MIN_M = 50 # minimum buffer even for very narrow reaches
+RASTER_BUFFER_MAX_M = 500 # maximum buffer to avoid over-extraction
+RASTER_NODATA_THRESHOLD = -9999  # pixels with this value are ignored
 
+# =======================================================================================
+# 3. EGG CODE CLASSIFICATION THRESHOLDS ----> NOTE: EXAMPLE for clipped SWORD
+# =======================================================================================
 
 #-------------------------------------------------------------------------
 # Classes based on SWORD dataset (2026 University of North Carolina at Chapel Hill)
