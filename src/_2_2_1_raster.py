@@ -1,9 +1,9 @@
-# src/_2_3_raster_join.py
+# src/_2_2_1_raster.py
 # ============================================================
 # 2.3.1 RASTER TO VECTOR JOIN
 
 # Extracts raster values along SWORD reach lines.
-# Buffer is based on SWORD width column + fixed offset.
+# Buffer is based on SWORD width column (width of the reach) + fixed offset e.g. 50m.
 #
 # Buffer logic:
 #   buffer = clip((width/2) + offset, min, max)
@@ -26,7 +26,6 @@ from _00_config import (
     RASTER_BUFFER_MIN_M,
     RASTER_BUFFER_MAX_M
 )
-
 
 def compute_buffer_radius(gdf, width_col="width"):
     """
@@ -77,22 +76,21 @@ def extract_raster_values(gdf, raster_path, col_name,
     result = gdf.copy()
 
     # Initialize output columns
-    result[f"{col_name}_mean"]   = np.nan
+    result[f"{col_name}_mean"] = np.nan
     result[f"{col_name}_median"] = np.nan
 
     # compute per-reach buffer radii
-    print(f"\nComputing buffers for {len(gdf)} reaches...")
     buffer_radii = compute_buffer_radius(gdf, width_col=width_col)
 
     # reproject to metric CRS and apply per-reach buffer
-    gdf_meters   = gdf.to_crs(crs_meters)
+    gdf_meters = gdf.to_crs(crs_meters)
     gdf_buffered = gdf_meters.copy()
     gdf_buffered["geometry"] = gdf_meters.geometry.buffer(buffer_radii)
     # geometry is now a polygon (buffered zone around reach line)
 
     with rasterio.open(raster_path) as src:
         raster_crs = src.crs
-        nodata     = src.nodata if src.nodata is not None \
+        nodata = src.nodata if src.nodata is not None \
                      else RASTER_NODATA_THRESHOLD
 
         print(f"\nRaster CRS: {raster_crs}")
@@ -123,7 +121,7 @@ def extract_raster_values(gdf, raster_path, col_name,
                     nodata=nodata
                 )
 
-                # Flatten and filter nodata / NaN
+                # Flatten and filter nodata/NaN
                 values = pixel_values.flatten().astype(float)
                 values = values[values != nodata]
                 values = values[~np.isnan(values)]
@@ -132,7 +130,7 @@ def extract_raster_values(gdf, raster_path, col_name,
                     n_empty += 1
                     continue
 
-                result.at[idx, f"{col_name}_mean"]   = float(np.mean(values))
+                result.at[idx, f"{col_name}_mean"] = float(np.mean(values))
                 result.at[idx, f"{col_name}_median"] = float(np.median(values))
                 n_success += 1
 
@@ -142,8 +140,8 @@ def extract_raster_values(gdf, raster_path, col_name,
                 continue
 
         print(f"\nResults:")
-        print(f"  Matched    : {n_success} / {len(gdf)}")
-        print(f"  Empty/NaN  : {n_empty}")
-        print(f"  Outside    : {n_outside}")
+        print(f"Matched: {n_success} / {len(gdf)}")
+        print(f"Empty/NaN: {n_empty}")
+        print(f"Outside: {n_outside}")
 
     return result
