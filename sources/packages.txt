@@ -1,0 +1,16 @@
+========================================================================
+WigglyRivers
+
+URL: https://pypi.org/project/WigglyRivers/
+
+WigglyRivers is a Python package that builds on existing work using wavelet-based methods 
+to create supervised and unsupervised meander identification tools. This tool allows the 
+characterization of the multiscale nature of river transects and the identification of 
+individual meandering features. The package uses any set of river coordinates and calculates 
+the curvature and direction-angle to perform the characterization, and also leverages the 
+use of the High-Resolution National Hydrography Dataset (NHDPlus HR) to assess river 
+transects at a catchment scale. Additionally, the WigglyRivers package contains a supervised 
+river identification tool that allows the visual selection of individual meandering features 
+with satellite imagery in the background.
+
+==========================================================================

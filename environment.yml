@@ -17,3 +17,5 @@ dependencies:
   - mapclassify
   - geopy
   - scikit-learn
+  - requests
+  - earthaccess
