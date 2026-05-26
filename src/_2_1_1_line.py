@@ -120,6 +120,15 @@ def join_line_majority(sword, grit,
         result = result.join(sec_series)
     result = result.join(confidence)
 
+    # grit_matched: True if at least one sample point found a GRIT feature within max_distance_m
+    result["grit_matched"] = result["grit_majority_confidence"].notna()
+    # grit_ambiguous: True if matched but less than 60% of sample points agreed on the same GRIT feature
+    # NOTE: unmatched reaches (grit_matched=False) are NOT flagged as ambiguous, they are a separate case
+    result["grit_ambiguous"] = (
+        result["grit_matched"] &
+        (result["grit_majority_confidence"] < 0.6)
+    )
+
     # Rename columns
     rename_map = {
         f"{primary_col}_majority": rename_cols.get(primary_col, primary_col)
