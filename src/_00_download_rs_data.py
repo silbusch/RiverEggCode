@@ -1,17 +1,8 @@
 # src/_00_download_rs_data.py
 #=============================================================
 
-# Purpose: **Purpose:** Download NASA SWOT hydrology data for a defined AOI, without downloading
+# Purpose: **Purpose:** Download data for a defined AOI, without downloading
 # the full global datasets. Two approaches are implemented:
-
-# Hydrocron API: Pulls SWOT time series for individual SWORD reaches already
-#   clipped to the AOI (Notebook 01 output). No file download, no NASA login required.
-#   This is to to be able to assess the data situation and figure out what variables could be derived or come up with from it, and so on. 
-
-#earthaccess: Searches and downloads the actual SWOT Shapefile granules
-#   (e.g. RiverSP/ Raster) filtered by bounding box and time range. Files are
-#   downloaded locally and clipped to the AOI. NASA Earthdata login required.
-#   Best for full spatial coverage, raster products but HUGEEEE amount of data.
 
 # (SWOT) Surface Water and Ocean Topography 
 # HYDROCRON API - single reach query function
@@ -85,6 +76,9 @@ import tempfile
 import geopandas as gpd
 import pandas as pd
 import time
+import math
+from soilgrids import SoilGrids
+import rasterio
 
 # ============================================================
 # HYDROCRON API
@@ -490,3 +484,218 @@ def stream_swot_granules(results, aoi_bounds,
         print("- River reaches are narrower than the SWOT 100 m threshold")
         print("- Bounding box does not intersect SWOT pass coverage")
         return None
+
+
+# ============================================================
+# ESA
+# ============================================================
+
+# WORLDCOVER
+
+def download_worldcover(bbox, 
+                        out_dir,
+                        max_tiles = 10):
+    """
+    Download ESA WorldCover 2021 (10m) tiles for a given bounding box.
+    Tiles are downloaded from the public AWS S3 bucket (no login required).
+    Only tiles intersecting the bbox are downloaded.
+
+    Parameters:
+    -----------
+    bbox        : tuple : (min_lon, min_lat, max_lon, max_lat) with buffer applied 
+    out_dir     : str - directory where downloaded tiles are saved
+    max_tiles   : int - max. amount of tiles before warning
+
+    Returns:
+    --------
+    list : file paths of downloaded GeoTIFF tiles
+    """
+
+    # Base URL for AWS S3 public bucket
+    BASE_URL = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map"
+
+    # Compute which 3x3 degree tiles intersect the bbox
+    # Tiles are named by their lower-left corner, snapped to 3-degree grid
+    # e.g. bbox covering lon 71-78, lat 40-42 needs tiles at:
+    # lon: 72, 75 (floor to nearest 3)
+    # lat: 39 (floor to nearest 3)
+    
+    min_lon, min_lat, max_lon, max_lat = bbox
+    
+    # snap to 3-degree grid (floor division)
+    lon_start = math.floor(min_lon / 3) * 3
+    lat_start = math.floor(min_lat / 3) * 3
+    
+    # build list of all tile corners needed
+    tile_origins = []
+    lon = lon_start
+    while lon < max_lon:
+        lat = lat_start
+        while lat < max_lat:
+            tile_origins.append((lon, lat))
+            lat += 3
+        lon += 3
+    
+    print(f"Tiles needed: {len(tile_origins)}")
+    # Safety check to avoid accidental large downloads
+    if len(tile_origins) > max_tiles:
+        raise ValueError(
+            f"Too many tiles ({len(tile_origins)}) for bbox. "
+            f"Increase max_tiles or reduce bbox. Current limit: {max_tiles}"
+        )
+    for t in tile_origins:
+        print(f"  lon={t[0]}, lat={t[1]}")
+
+    def tile_name(lon, lat):
+        """Build WorldCover tile name from lower-left corner coordinates."""
+        lat_str = f"{'N' if lat >= 0 else 'S'}{abs(lat):02d}"
+        lon_str = f"{'E' if lon >= 0 else 'W'}{abs(lon):03d}"
+        return f"{lat_str}{lon_str}" 
+    
+    os.makedirs(out_dir, exist_ok=True)
+    downloaded = []  # collect paths of successfully downloaded files
+
+    for lon, lat in tile_origins:
+        name = tile_name(lon, lat)
+        filename = f"ESA_WorldCover_10m_2021_v200_{name}_Map.tif"
+        url = f"{BASE_URL}/{filename}"
+        out_path = os.path.join(out_dir, filename)
+
+        # Skip if already downloaded
+        if os.path.exists(out_path):
+            print(f"Already exists, skipping: {filename}")
+            downloaded.append(out_path)
+            continue
+
+        # Download tile
+        print(f"Downloading: {filename}")
+        response = requests.get(url, stream=True, timeout=60)
+        
+        if response.status_code == 200:
+            with open(out_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            print(f"  Saved: {out_path}")
+            downloaded.append(out_path)
+        else:
+            print(f"Not found (HTTP {response.status_code}): {url}")
+
+    print(f"\nDownload complete: {len(downloaded)} tiles")
+    return downloaded   
+
+
+def merge_raster_tiles(tile_paths, out_path):
+    """
+    Merge multiple raster tiles into a single GeoTIFF mosaic.
+    Used to combine WorldCover tiles before joining to SWORD reaches.
+
+    Parameters:
+    -----------
+    tile_paths : list - file paths of individual raster tiles to merge
+    out_path   : str  - file path for the merged output GeoTIFF
+
+    Returns:
+    --------
+    str : file path of the merged GeoTIFF
+    """
+    from rasterio.merge import merge as rio_merge
+
+    # Skip if already merged
+    if os.path.exists(out_path):
+        print(f"Already exists, skipping merge: {out_path}")
+        return out_path
+
+    print(f"Merging {len(tile_paths)} tiles...")
+
+    # Open all source tiles
+    sources = [rasterio.open(p) for p in tile_paths]
+
+    # Merge into one mosaic
+    mosaic, transform = rio_merge(sources)
+
+    # Copy metadata from first tile and update with new dimensions
+    meta = sources[0].meta.copy()
+    meta.update({
+        "driver"    : "GTiff",
+        "height"    : mosaic.shape[1],
+        "width"     : mosaic.shape[2],
+        "transform" : transform
+    })
+
+    # Save merged raster
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with rasterio.open(out_path, "w", **meta) as dest:
+        dest.write(mosaic)
+
+    # Close all source files
+    for src in sources:
+        src.close()
+
+    print(f"Merged {len(tile_paths)} tiles → {out_path}")
+    return out_path
+
+
+# ============================================================
+# SoilGrids
+# ============================================================
+# https://docs.isric.org/globaldata/soilgrids/
+
+
+def download_soilgrids(bbox, 
+                        out_dir,
+                        soilgrids_vars):
+    """
+    Download SoilGrids (250m) tiles for a given bounding box.
+    
+
+    Parameters:
+    -----------
+    bbox        : tuple : (min_lon, min_lat, max_lon, max_lat) with buffer applied 
+    out_dir     : str - directory where downloaded tiles are saved
+    soilgrids_vars: list of tuples - (service_id, coverage_id, description)
+
+    Returns:
+    --------
+    list : file paths of downloaded GeoTIFF tiles
+    """
+    soil_grids = SoilGrids()
+
+    downloaded = []
+    os.makedirs(out_dir, exist_ok=True)
+
+    # SoilGrids native resolution is 250m
+    # At EPSG:4326, roughly 0.002° per pixel (250m / ~111000m per degree)
+    RESOLUTION_DEG = 250 / 111000  # degrees per pixel
+
+    width  = int((bbox[2] - bbox[0]) / RESOLUTION_DEG)  # lon extent / resolution
+    height = int((bbox[3] - bbox[1]) / RESOLUTION_DEG)  # lat extent / resolution
+
+    print(f"Requesting grid: {width} x {height} pixels")
+
+    for service_id, coverage_id, description in soilgrids_vars:
+        out_path = os.path.join(out_dir, f"{coverage_id}.tif")
+        
+        # Skip if already downloaded
+        if os.path.exists(out_path):
+            print(f"Already exists, skipping: {coverage_id}")
+            downloaded.append(out_path)
+            continue
+        
+        print(f"Downloading: {coverage_id} – {description}")
+        soil_grids.get_coverage_data(
+            service_id  = service_id,
+            coverage_id = coverage_id,
+            west  = float(bbox[0]),
+            south = float(bbox[1]),
+            east  = float(bbox[2]),
+            north = float(bbox[3]),
+            crs    = "urn:ogc:def:crs:EPSG::4326",
+            width  = width,
+            height = height,
+            output = out_path
+        )
+        downloaded.append(out_path)
+        print(f"  Saved: {out_path}")
+
+    print(f"\nDownload complete: {len(downloaded)} variables")
+    return downloaded
