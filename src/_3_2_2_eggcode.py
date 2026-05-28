@@ -18,10 +18,10 @@ import numpy as np
 REACH_EGG_COLS = ["egg_SL", "egg_P", "egg_QT", "egg_TM"]
 
 
-def build_egg(group):
+def build_egg(group, grouped_col, strahler_col):
     """
     Build one Egg dictionary from a group of SWORD reaches
-    sharing the same global_id_GRITv1.0.
+    sharing the same grouped_col.
 
     Reaches are sorted upstream → downstream via dist_out (descending).
     dist_out = distance to outlet → higher value = further upstream.
@@ -44,8 +44,8 @@ def build_egg(group):
 
     # Build the full Egg
     egg = {
-        "global_id": group["global_id_GRITv1.0"].iloc[0],
-        "strahler_order": group["strahler_order_GRITv1.0"].iloc[0],
+        "global_id": group[grouped_col].iloc[0],
+        "strahler_order": group[strahler_col].iloc[0],
         "n_reaches": len(group),
         #NOTE: River type: placeholder until more data joined
         "RT": None,   
@@ -55,17 +55,24 @@ def build_egg(group):
     return egg
 
 
-def build_all_eggs(gdf):
+def build_all_eggs(gdf, grouped_col, strahler_col):
     """
-    Build one Egg per global_id_GRITv1.0 from a classified GeoDataFrame.
+    Build one Egg per grouped_col (e.g. global_id_GRITv1.0) from a classified GeoDataFrame.
+
+    Parameters:
+    -----------
+    gdf: 
+    grouped_col: str - 
+    strahler_col: str -
+
 
     Returns: list of Egg dicts, one per global_id
     """
     eggs = []
-    grouped = gdf.groupby("global_id_GRITv1.0", dropna=True)
+    grouped = gdf.groupby(grouped_col, dropna=True)
 
     for global_id, group in grouped:
-        egg = build_egg(group)
+        egg = build_egg(group, grouped_col, strahler_col)
         eggs.append(egg)
 
     print(f"Eggs built: {len(eggs)}")

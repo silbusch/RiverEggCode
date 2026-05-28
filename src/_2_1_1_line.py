@@ -14,6 +14,7 @@
 import numpy as np
 import geopandas as gpd
 import pandas as pd
+import networkx as nx
 
 
 def majority_vote(series):
@@ -26,7 +27,8 @@ def join_line_majority(sword, grit,
                        rename_cols,
                        max_distance_m=100,
                        sample_distance_m=50,
-                       crs_meters="EPSG:32643"):
+                       crs_meters="EPSG:32643",
+                       prefix="default"):
     """
     Join attributes from a line GeoDataFrame (e.g. GRIT) to SWORD reaches
     using majority-vote sampling along each reach, meaning that points along the line
@@ -41,6 +43,7 @@ def join_line_majority(sword, grit,
     max_distance_m: float - max distance for sjoin_nearest (meters)
     sample_distance_m: float - sample one point every N meters
     crs_meters: str - projected CRS for distance calculations
+    prefix: str - prefix for joined columns 
 
     Returns:
     --------
@@ -112,7 +115,7 @@ def join_line_majority(sword, grit,
         .apply(lambda df: (
             df[primary_col] == majority_vote(df[primary_col])
         ).mean())
-        .rename("grit_majority_confidence"))
+        .rename(f"{prefix}_majority_confidence"))
 
     #Join all back to SWORD
     result = sword.join(majority)
@@ -120,13 +123,14 @@ def join_line_majority(sword, grit,
         result = result.join(sec_series)
     result = result.join(confidence)
 
-    # grit_matched: True if at least one sample point found a GRIT feature within max_distance_m
-    result["grit_matched"] = result["grit_majority_confidence"].notna()
-    # grit_ambiguous: True if matched but less than 60% of sample points agreed on the same GRIT feature
-    # NOTE: unmatched reaches (grit_matched=False) are NOT flagged as ambiguous, they are a separate case
-    result["grit_ambiguous"] = (
-        result["grit_matched"] &
-        (result["grit_majority_confidence"] < 0.6)
+    # {prefix}_matched: True if at least one sample point found a feature within max_distance_m
+    result[f"{prefix}_matched"] = result[f"{prefix}_majority_confidence"].notna()
+
+    # {prefix}_ambiguous: True if matched but less than 60% of sample points agreed
+    # NOTE: unmatched reaches ({prefix}_matched=False) are NOT flagged as ambiguous
+    result[f"{prefix}_ambiguous"] = (
+        result[f"{prefix}_matched"] &
+        (result[f"{prefix}_majority_confidence"] < 0.6)
     )
 
     # Rename columns
@@ -148,6 +152,65 @@ def join_line_majority(sword, grit,
     print(f"  Matched   : {n_matched} / {len(sword)}")
     print(f"  Unmatched : {n_unmatched}")
     print(f"  Confidence distribution:")
-    print(f"  {result['grit_majority_confidence'].describe().round(3)}")
+    print(f"  {result[f'{prefix}_majority_confidence'].describe().round(3)}")
+
+    return result
+
+
+def compute_strahler_segments(river_atlas_gdf, hyriv_col="HYRIV_ID", 
+                               next_down_col="NEXT_DOWN",
+                               strahler_col="ORD_STRA"):
+    """
+    Compute spatially connected segments of equal Strahler order
+    using NEXT_DOWN topology from RiverATLAS.
+    
+    Reaches with the same Strahler order that are directly connected
+    (via NEXT_DOWN) are assigned the same segment_id. This prevents
+    spatially distant reaches of equal order from being grouped together.
+
+    Parameters:
+    -----------
+    river_atlas_gdf : GeoDataFrame - RiverATLAS reaches with NEXT_DOWN
+    hyriv_col : str - column with unique reach ID
+    next_down_col : str - column with downstream reach ID
+    strahler_col : str - column with Strahler order
+
+    Returns:
+    --------
+    GeoDataFrame : input with new column 'strahler_segment_id' added
+    """
+    result = river_atlas_gdf.copy()
+    
+    # Build set of valid HYRIV_IDs for fast lookup
+    valid_ids = set(result[hyriv_col].values)
+
+    # Build directed graph, only connect reaches of same Strahler order
+    G = nx.DiGraph()
+    for _, row in result.iterrows():
+        hyriv    = row[hyriv_col]
+        next_down = row[next_down_col]
+        ord_stra  = row[strahler_col]
+        G.add_node(hyriv, ord_stra=ord_stra)
+
+        # Only add edge if downstream reach exists AND has same Strahler order
+        if next_down in valid_ids:
+            next_ord = result.loc[result[hyriv_col] == next_down, strahler_col].values
+            if len(next_ord) > 0 and next_ord[0] == ord_stra:
+                G.add_edge(hyriv, next_down)
+
+    # Find weakly connected components, these are the segments
+    components = list(nx.weakly_connected_components(G))
+
+    # Assign a unique segment_id to each component
+    hyriv_to_segment = {}
+    for seg_id, component in enumerate(components):
+        for hyriv in component:
+            hyriv_to_segment[hyriv] = seg_id
+
+    result["strahler_segment_id"] = result[hyriv_col].map(hyriv_to_segment)
+
+    print(f"RiverATLAS reaches: {len(result)}")
+    print(f"Strahler segments found: {result['strahler_segment_id'].nunique()}")
+    print(f"Avg reaches per segment: {len(result) / result['strahler_segment_id'].nunique():.1f}")
 
     return result
