@@ -4,6 +4,8 @@ data/outputs/
 *.tif 
 *.nc 
 *.shp 
+*.gpkg
+#*.parquet
 .ipynb_checkpoints/ 
 __pycache__/ 
 src/_0_config_paths.py
