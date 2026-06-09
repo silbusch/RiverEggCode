@@ -106,34 +106,36 @@ def egg_to_dataframe(eggs):
     return pd.DataFrame(rows)
 
 
+# NOTE: Hardcoded, need to make it more adjustable...right now it calls SL, P, QT, etc. from 
 def egg_to_string(egg):
     """
     Format one Egg as a readable string for display or logging.
-
-    Example output:
-        ═══════════════════════════════════════
-        global_id: 1042  |  strahler: 3  |  n_reaches: 3
-        RT: None
-        ───────────────────────────────────────
-        #   reach_id    len_m   SL   P    QT   TM
-        1   r001        4821     3   St    1   Bl
-        2   r002        3102     3   St    1   Bl
-        3   r003        6440     2   Br    3   Mx
-        ═══════════════════════════════════════
+    Works for both grouping approaches (strahler_segment and basin_6).
+    strahler_order is optional – shown in header only if present.
     """
     lines = []
-    lines.append("═" * 55)
-    lines.append(
-        f"global_id: {egg['global_id']}  |  "
-        f"strahler: {egg['strahler_order']}  |  "
-        f"n_reaches: {egg['n_reaches']}"
-    )
-    lines.append(f"RT: {egg['RT']}")
-    lines.append("─" * 55)
+    lines.append("═" * 65)
 
-    # Header
+    # Header – strahler_order is optional
+    strahler = egg.get("strahler_order", None)
+    if strahler is not None:
+        lines.append(
+            f"global_id: {egg['global_id']}  |  "
+            f"strahler: {strahler}  |  "
+            f"n_reaches: {egg['n_reaches']}"
+        )
+    else:
+        lines.append(
+            f"global_id: {egg['global_id']}  |  "
+            f"n_reaches: {egg['n_reaches']}"
+        )
+
+    lines.append(f"RT: {egg['RT']}")
+    lines.append("─" * 65)
+
+    # Column header – Strahler column always shown (reach-level)
     lines.append(f"{'#':<4} {'reach_id':<12} {'len_m':<8} "
-                 f"{'SL':<5} {'P':<6} {'QT':<5} {'TM':<5}")
+                 f"{'SL':<5} {'P':<6} {'QT':<5} {'TM':<5} {'Strahler':<5}")
 
     # One row per reach
     for pos, reach in enumerate(egg["reaches"], start=1):
@@ -141,11 +143,85 @@ def egg_to_string(egg):
             f"{pos:<4} "
             f"{str(reach['reach_id']):<12} "
             f"{str(reach['len_m']):<8} "
-            f"{str(reach.get('egg_SL', '–')):<5} "
-            f"{str(reach.get('egg_P', '–')):<6} "
-            f"{str(reach.get('egg_QT','–')):<5} "
-            f"{str(reach.get('egg_TM', '–')):<5}"
+            f"{str(reach.get('egg_SL', '-')):<5} "
+            f"{str(reach.get('egg_P', '-')):<6} "
+            f"{str(reach.get('egg_QT', '-')):<5} "
+            f"{str(reach.get('egg_TM', '-')):<5} "
+            f"{str(reach.get('strahler_order', '-')):<5}"
         )
 
-    lines.append("═" * 55)
+    lines.append("═" * 65)
     return "\n".join(lines)
+
+def extract_basin6(reach_id):
+    """
+    Extract Pfafstetter Level 6 basin code from SWORD reach_id.
+    
+    reach_id format: CBBBBBRRRRT
+    - C      : Continent (1 digit)
+    - BBBBB  : Pfafstetter basin code up to level 6 (5 digits)
+    - RRR    : Reach number within basin (3 digits)
+    - T      : Type (1 digit)
+    
+    Returns: str - first 6 digits of reach_id
+    """
+    return str(reach_id)[:6]
+
+
+def build_basin6_eggs(gdf, strahler_col="strahler_order_RiverATLAS"):
+    """
+    Build one Egg per Pfafstetter Level 6 basin using the SWORD reach_id structure.
+    All reaches sharing the same first 6 digits of reach_id belong to the same basin.
+    Reaches are sorted upstream to downstream via dist_out (descending).
+
+    This approach requires no external dataset, basin membership is encoded
+    directly in the SWORD reach_id.
+
+    Parameters:
+    -----------
+    gdf          : GeoDataFrame - classified SWORD reaches
+    strahler_col : str - column with Strahler order (default: strahler_order_RiverATLAS)
+
+    Returns:
+    --------
+    list of Egg dicts, one per Level 6 basin
+    """
+    result = gdf.copy()
+
+    # Extract basin_6 from reach_id
+    result["basin_6"] = result["reach_id"].astype(str).str[:6]
+
+    eggs = []
+    grouped = result.groupby("basin_6", dropna=True)
+
+    for basin_id, group in grouped:
+        # Sort reaches upstream to downstream
+        group = group.sort_values("dist_out", ascending=False)
+
+        # Build per-reach data
+        reaches = []
+    for _, row in group.iterrows():
+        reach_entry = {
+            "reach_id"       : row["reach_id"],
+            "len_m"          : int(round(row["reach_len"])) if pd.notna(row.get("reach_len")) else None,
+            "strahler_order" : row.get("strahler_order_RiverATLAS", None),  # reach-level attribute
+        }
+        for col in REACH_EGG_COLS:
+            reach_entry[col] = row[col] if col in row.index else None
+        reaches.append(reach_entry)
+
+        # Get majority Strahler order for this basin
+        strahler = group[strahler_col].dropna().mode()
+        strahler_val = strahler.iloc[0] if len(strahler) > 0 else None
+
+        egg = {
+            "global_id"     : basin_id,
+            "n_reaches"     : len(group),
+            "RT"            : None,
+            "reaches"       : reaches
+        }
+        eggs.append(egg)
+
+    print(f"Basin6 Eggs built: {len(eggs)}")
+    print(f"Total reaches covered: {sum(e['n_reaches'] for e in eggs)}")
+    return eggs
