@@ -14,8 +14,11 @@
 import pandas as pd
 import numpy as np
 
+from _3_2_1_classifier import DEFAULT_CLASSIFIERS
+
 # Columns that are classified per reach (in display order top -> bottom)
-REACH_EGG_COLS = ["egg_SL", "egg_P", "egg_QT", "egg_TM"]
+REACH_EGG_COLS = [c.name for c in DEFAULT_CLASSIFIERS if c.available]
+
 
 
 def build_egg(group, grouped_col, strahler_col):
@@ -51,8 +54,8 @@ def build_egg(group, grouped_col, strahler_col):
         "RT": None,   
         "reaches": reaches
     }
-
     return egg
+
 
 
 def build_all_eggs(gdf, grouped_col, strahler_col):
@@ -80,78 +83,83 @@ def build_all_eggs(gdf, grouped_col, strahler_col):
     return eggs
 
 
+
 def egg_to_dataframe(eggs):
     """
     Convert list of Eggs to a flat DataFrame for export to GeoPackage/CSV.
-    One row per reach, with global_id and RT repeated for each reach.
+    One row per reach, with global_id and RT (river type) repeated for each reach.
 
     Columns:
         global_id, strahler_order, RT, n_reaches,
         reach_position (1=upstream), reach_id, len_m,
-        egg_SL, egg_P, egg_QT, egg_TM
+        egg_SL, egg_P, egg_QT
     """
     rows = []
     for egg in eggs:
         for pos, reach in enumerate(egg["reaches"], start=1):
             row = {
-                "global_id": egg["global_id"],
-                "strahler_order": egg["strahler_order"],
-                "RT": egg["RT"],
-                "n_reaches": egg["n_reaches"],
-                "reach_position": pos, # 1 = most upstream
+                "global_id"     : egg.get("global_id", None),
+                "strahler_order": egg.get("strahler_order", None),
+                "RT"            : egg.get("RT", None),
+                "n_reaches"     : egg.get("n_reaches", None),
+                "reach_position": pos,
             }
             row.update(reach)
             rows.append(row)
-
     return pd.DataFrame(rows)
 
 
-# NOTE: Hardcoded, need to make it more adjustable...right now it calls SL, P, QT, etc. from 
+
 def egg_to_string(egg):
     """
     Format one Egg as a readable string for display or logging.
     Works for both grouping approaches (strahler_segment and basin_6).
-    strahler_order is optional – shown in header only if present.
     """
     lines = []
     lines.append("═" * 65)
 
-    # Header – strahler_order is optional
+    # Egg header, strahler_order optional
     strahler = egg.get("strahler_order", None)
     if strahler is not None:
         lines.append(
-            f"global_id: {egg['global_id']}  |  "
+            f"global_id: {egg['global_id']}|"
             f"strahler: {strahler}  |  "
             f"n_reaches: {egg['n_reaches']}"
         )
     else:
         lines.append(
-            f"global_id: {egg['global_id']}  |  "
+            f"global_id: {egg['global_id']}|"
             f"n_reaches: {egg['n_reaches']}"
         )
+    lines.append(f"RT: {egg.get('RT', None)}")
+    lines.append("-" * 65)
 
-    lines.append(f"RT: {egg['RT']}")
-    lines.append("─" * 65)
+    # Header
+    col_labels = [col.replace("egg_", "") for col in REACH_EGG_COLS]
 
-    # Column header – Strahler column always shown (reach-level)
-    lines.append(f"{'#':<4} {'reach_id':<12} {'len_m':<8} "
-                 f"{'SL':<5} {'P':<6} {'QT':<5} {'TM':<5} {'Strahler':<5}")
+    header = (
+    f"{'#':<4} {'reach_id':<12} {'len_m':<8} "
+    + " ".join(f"{label:<6}" for label in col_labels)
+    + f" {'Strahler':<5}"
+    )
+    lines.append(header)
 
-    # One row per reach
     for pos, reach in enumerate(egg["reaches"], start=1):
+        egg_values = " ".join(
+            f"{str(reach.get(col, '-')):<6}" for col in REACH_EGG_COLS
+        )
         lines.append(
             f"{pos:<4} "
             f"{str(reach['reach_id']):<12} "
             f"{str(reach['len_m']):<8} "
-            f"{str(reach.get('egg_SL', '-')):<5} "
-            f"{str(reach.get('egg_P', '-')):<6} "
-            f"{str(reach.get('egg_QT', '-')):<5} "
-            f"{str(reach.get('egg_TM', '-')):<5} "
+            f"{egg_values} "
             f"{str(reach.get('strahler_order', '-')):<5}"
         )
 
     lines.append("═" * 65)
     return "\n".join(lines)
+
+
 
 def extract_basin6(reach_id):
     """
@@ -166,6 +174,7 @@ def extract_basin6(reach_id):
     Returns: str - first 6 digits of reach_id
     """
     return str(reach_id)[:6]
+
 
 
 def build_basin6_eggs(gdf, strahler_col="strahler_order_RiverATLAS"):
@@ -193,26 +202,22 @@ def build_basin6_eggs(gdf, strahler_col="strahler_order_RiverATLAS"):
 
     eggs = []
     grouped = result.groupby("basin_6", dropna=True)
-
+    
     for basin_id, group in grouped:
         # Sort reaches upstream to downstream
         group = group.sort_values("dist_out", ascending=False)
 
         # Build per-reach data
         reaches = []
-    for _, row in group.iterrows():
-        reach_entry = {
-            "reach_id"       : row["reach_id"],
-            "len_m"          : int(round(row["reach_len"])) if pd.notna(row.get("reach_len")) else None,
-            "strahler_order" : row.get("strahler_order_RiverATLAS", None),  # reach-level attribute
-        }
-        for col in REACH_EGG_COLS:
-            reach_entry[col] = row[col] if col in row.index else None
-        reaches.append(reach_entry)
-
-        # Get majority Strahler order for this basin
-        strahler = group[strahler_col].dropna().mode()
-        strahler_val = strahler.iloc[0] if len(strahler) > 0 else None
+        for _, row in group.iterrows():
+            reach_entry = {
+                "reach_id"       : row["reach_id"],
+                "len_m"          : int(round(row["reach_len"])) if pd.notna(row.get("reach_len")) else None,
+                "strahler_order" : row.get("strahler_order_RiverATLAS", None),  # reach-level attribute
+            }
+            for col in REACH_EGG_COLS:
+                reach_entry[col] = row[col] if col in row.index else None
+            reaches.append(reach_entry)
 
         egg = {
             "global_id"     : basin_id,

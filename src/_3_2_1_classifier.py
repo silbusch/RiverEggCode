@@ -19,7 +19,7 @@ import sys
 import os
 
 sys.path.append(os.path.join(os.path.dirname(__file__)))
-from _00_config import WD_AVAILABLE
+#from _00_config import WD_AVAILABLE
 
 # NOTE: Label format decision pending supervisor review
 # Option A: Integer labels (1-5) for ordinal classes (SL, QT) 
@@ -133,54 +133,80 @@ class DischargeClassifier(EggClassifier):
         ).astype("string")
 
 
-class TransportModeClassifier(EggClassifier):
-    name = ""
-    source_col = ""
-    breaks = [,float("inf")]
-    labels = []
+# class TransportModeClassifier(EggClassifier):
+#     name = ""
+#     source_col = ""
+#     breaks = [,float("inf")]
+#     labels = []
 
-    def classify(self, gdf):
-        """
-        Classify sediment transport mode based on ....
-        """
+#     def classify(self, gdf):
+#         """
+#         Classify sediment transport mode based on ....
+#         """
+# ============================================================
+# RIVER PROFILES
+# Study area specific classifier configurations.
+# Adding new profiles here for rivers with different characteristics.
+# ============================================================
+
+# randome rules for testing
+# Lowland profile for low-gradient rivers (e.g. Elbe, Rhine)
+# Uses finer slope breaks to better discriminate lowland reaches
+# NOTE: breaks are placeholders adjust after data exploration
+class SlopeClassifierLowland(SlopeClassifier):
+    """
+    Slope classifier for lowland rivers.
+    Finer breaks for low-gradient environments.
+    Inherits everything from SlopeClassifier except breaks and labels.
+    """
+    breaks = [0.0, 0.5, 1.0, 2.0, 5.0, float("inf")]
+    labels = [1, 2, 3, 4, 5]
+
+
+# ============================================================
+# CLASSIFIER REGISTRY
+# Adding new classifiers here to include them in classify_all().
+# For aoi specific profiles, creating a new list below.
+# ============================================================
+# Default profile: applies to all rivers unless specified
+DEFAULT_CLASSIFIERS = [
+    SlopeClassifier(),
+    PlanformClassifier(),
+    DischargeClassifier(),
+]
+
+LOWLAND_CLASSIFIERS = [
+    SlopeClassifierLowland(),  # finer slope breaks for lowland
+    PlanformClassifier(),      # identical to default
+    DischargeClassifier(),     # identical to default
+]
 
 
 
 
+def classify_all(gdf, classifiers=DEFAULT_CLASSIFIERS):
+    """
+    Run all available classifiers on a GeoDataFrame.
+    Classifiers are defined in DEFAULT_CLASSIFIERS registry.
+    To use a study-area specific profile, pass a different list.
+    
+    Parameters:
+    -----------
+    gdf : GeoDataFrame - SWORD reaches with joined attributes
+    classifiers : list - list of EggClassifier instances to run
 
+    Returns:
+    --------
+    GeoDataFrame with new egg_ columns added
+    """
+    result = gdf.copy()
+    
+    for classifier in classifiers:
+        if not classifier.available: # check attribute of single classifier
+            continue
+        if not classifier.validate(result): # check if source_col exists
+            continue
+        result[classifier.name] = classifier.classify(result)
+        print(f" {classifier.name}: Done")
 
-
-
-
-# def classify_all(gdf):
-#     """
-#     Run all available classifiers on a GeoDataFrame.
-#     Returns the GeoDataFrame with new Egg Code columns added.
-
-#     New columns:
-#         egg_SL – Slope class (Int64)
-#         egg_P – Planform (string: St/Br/An)
-#         egg_QT – Discharge class (Int64)
-#         egg_TM – Transport mode (string: Bl/Mx/Su)
-#         egg_WD – Width/Depth (string: not available → NaN)
-#     """
-#     result = gdf.copy()
-
-# # NOTE: Still hardcoded!!!!
-#     result["egg_SL"] = classify_slope(result)
-#     result["egg_P"] = classify_planform(result)
-#     result["egg_QT"] = classify_discharge(result)
-#     result["egg_TM"] = classify_transport_mode(result)
-
-#     # WD not available until depth dataset is joined or fitting datasend is found...
-#     if not WD_AVAILABLE:
-#         result["egg_WD"] = pd.NA
-#         print("  egg_WD : not available (no depth dataset joined)")
-
-#     print("Classification complete:")
-#     print(f"egg_SL : {result['egg_SL'].value_counts().sort_index().to_dict()}")
-#     print(f"egg_P : {result['egg_P'].value_counts().to_dict()}")
-#     print(f"egg_QT : {result['egg_QT'].value_counts().sort_index().to_dict()}")
-#     print(f"egg_TM : {result['egg_TM'].value_counts().to_dict()}")
-
-#     return result
+    return result
