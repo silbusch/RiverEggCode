@@ -699,3 +699,101 @@ def download_soilgrids(bbox,
 
     print(f"\nDownload complete: {len(downloaded)} variables")
     return downloaded
+
+# ============================================================
+# MERIT DEM Download via OpenTopography API
+# Downloads MERIT DEM for the study area bounding box
+# ============================================================
+
+def download_opentopo_dem(bbox, out_path, api_key, demtype="COP30", buffer_deg=0.1):
+    """
+    Download DEM/DSM from OpenTopography Global Datasets API.
+
+    bbox: (minx, miny, maxx, maxy) in EPSG:4326
+    demtype examples: COP30, COP90, NASADEM, SRTMGL1, SRTMGL3, AW3D30
+    """
+    minx, miny, maxx, maxy = map(float, bbox)
+
+    params = {
+        "demtype": demtype,
+        "south": miny - buffer_deg,
+        "north": maxy + buffer_deg,
+        "west": minx - buffer_deg,
+        "east": maxx + buffer_deg,
+        "outputFormat": "GTiff",
+        "API_Key": api_key,
+    }
+
+    url = "https://portal.opentopography.org/API/globaldem"
+
+    print(f"Downloading {demtype} for bbox: {bbox}...")
+    response = requests.get(url, params=params, stream=True, timeout=120)
+
+    if response.status_code != 200:
+        print("Requested URL:", response.url)
+        print(f"Error {response.status_code}: {response.text[:1000]}")
+        return None
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+    with open(out_path, "wb") as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                f.write(chunk)
+
+    print(f"Saved: {out_path}")
+    return out_path
+
+
+# ============================================================
+# GLOBAL DAM WATCH (GDW) DOWNLOAD
+# Source  : https://figshare.com/articles/dataset/25988293
+# Format  : Shapefile (.zip, ~70 MB)
+# License : CC BY 4.0, no account required
+# ============================================================
+
+def download_gdw(out_dir, url="https://ndownloader.figshare.com/files/47913754"):
+    """
+    Download the Global Dam Watch (GDW v1.0) dataset from Figshare
+    and unzip it into out_dir.
+
+    The GDW is a global dataset of barriers (dams, weirs, culverts, etc.)
+    with attributes on dam height, volume, purpose, and construction year.
+    It is used in this pipeline to snap dam locations to SWORD nodes
+    and compute longitudinal connectivity (egg_LC).
+
+    Parameters:
+    -----------
+    out_dir : str  - target directory where the unzipped files will be stored
+    url: str  - Figshare direct download URL (default: GDW v1.0 Shapefile)
+
+    Returns:
+    --------
+    str : path to the output directory containing the unzipped Shapefile
+    """
+    # Skip download if output directory already contains files
+    # (avoids re-downloading on repeated runs)
+    if os.path.exists(out_dir) and len(os.listdir(out_dir)) > 0:
+        print(f"GDW already exists, skipping download: {out_dir}")
+        return out_dir
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Download the zip file into memory (no temp file on disk)
+    print(f"Downloading GDW from Figshare (~70 MB)...")
+    response = requests.get(url, stream=True, timeout=120)
+
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"GDW download failed: HTTP {response.status_code} | URL: {url}"
+        )
+
+    # Load response bytes into an in-memory buffer and unzip directly
+    # This avoids writing the .zip file to disk, only the extracted files are kept
+    zip_buffer = io.BytesIO(response.content)
+    with zipfile.ZipFile(zip_buffer) as zf:
+        zf.extractall(out_dir)
+        extracted = zf.namelist()
+
+    print(f"Extracted {len(extracted)} files to: {out_dir}")
+    return out_dir

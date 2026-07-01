@@ -60,3 +60,11 @@ def build_sword_graph(sword, direction="upstream"):
     print(f"Graph edges: {G.number_of_edges()}")
 
     return G
+
+# ============================================================
+# Creating Confinemnet with 
+#
+# https://doi.org/10.1002/esp.3893Digital
+#https://doi.org/10.1016/j.cageo.2016.07.014
+# ============================================================
+"""

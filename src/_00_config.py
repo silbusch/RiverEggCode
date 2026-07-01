@@ -1,4 +1,36 @@
 # =======================================================================================
+# In this configuration file, the study area for investigating single Riversystems is set.
+# Setting single river systems as AOI is only to investigate the SWORD dataset and to search
+# for erros, or compute the best global solutions for the river classes.
+# =======================================================================================
+
+# ============================================================
+# STUDY AREA --> change here to switch rivers globally
+# All notebooks and path configs derive from these two variables.
+# ============================================================
+# Setting the study area
+# NOTE: A global Option, or C´continent option should be possible to produce all the data in the end.
+# Later "global" will be used, to create ""
+STUDY_AREA = "naryn"
+
+# Pfafstetter Level-5 or Level-6 codes (first 5 or 6 digits of SWORD reach_id)
+PFAF_IDS = [46219]
+
+# Number of digits to use for PFAF matching (5 = Level 5, 6 = Level 6)
+PFAF_LEVEL_DIGITS = 5
+
+# #---- ELBE -------
+# STUDY_AREA = "elbe"
+# PFAF_IDS = [2328]
+# PFAF_LEVEL_DIGITS = 4
+
+# #---- AMAZON -------
+# STUDY_AREA = "amazon"
+# # PFAF_IDS = [62244, 62292, 62262] # just partly?
+# # PFAF_LEVEL_DIGITS = 5
+
+
+# =======================================================================================
 # 2.3 Extracting/Sampling raster values to SWORD reaches
 # =======================================================================================
 # RASTER JOIN – width-based buffer (m)
