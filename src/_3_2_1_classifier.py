@@ -115,6 +115,20 @@ class PlanformClassifier(EggClassifier):
         )        
 
 
+# egg_QT - Discharge classification
+# NOTE: breaks are currently Naryn-specific placeholders based on
+#       quantiles of facc values - global calibration pending.
+#       Label meaning (1=low ... 5=very high) to be confirmed
+#       with supervisor before finalizing....AND WHAT ABOUT THE DISCHARGE PROFILE???
+
+# # Alternativ aus Variablen von z.B. RiverATLAS:
+# dis_m3_pyr  - mittlerer Jahresabfluss
+# dis_m3_pmn  - mittlerer Monatsabfluss (niedrigster Monat)
+# dis_m3_pmx  - mittlerer Monatsabfluss (höchster Monat)
+
+# oder aus GloRiC:
+# Log_Q_var   - Flow Variability Index = max. monatlicher Q / Jahresmittel
+# Class_hydr  - bereits beide Dimensionen kombiniert (Mittelwert + Variabilität)
 class DischargeClassifier(EggClassifier):
     name = "egg_QT"
     source_col = "facc"
@@ -131,6 +145,77 @@ class DischargeClassifier(EggClassifier):
             labels=self.labels,
             include_lowest=True
         ).astype("string")
+
+
+class PreclassifiedClassifier(EggClassifier):
+    """
+    Base class for Egg dimensions derived from pre-classified external datasets.
+    
+    Unlike computed classifiers (e.g. SlopeClassifier which applies pd.cut),
+    these classifiers directly pass through integer class codes that have
+    already been computed by an external source (e.g. GloRiC, FFR).
+    
+    No computation is performed here – the external classification is
+    trusted and adopted as-is as an Egg dimension.
+    
+    To add a new pre-classified dimension:
+        1. Ensure the source column is joined to SWORD in Notebook 02
+        2. Create a subclass with name and source_col set
+        3. Add a lookup table in _lookups.py for human-readable descriptions
+        4. Add an instance to DEFAULT_CLASSIFIERS
+    
+    Assumptions and limitations:
+        - The source dataset's classification scheme is trusted without validation
+        - Integer class codes are assumed to be stable across dataset versions
+        - If source column is missing, classify() will be skipped via validate()
+    """
+    def classify(self, gdf):
+        # Directly pass through the pre-computed integer class code
+        # No transformation applied – external classification is adopted as-is
+        return gdf[self.source_col].astype("Int64")
+
+
+# ============================================================
+# GloRiC-derived classifiers
+# Source: GloRiC v1.0 (Ouellet Dallaire et al. 2019)
+# Lookup tables: see _lookups.py
+# ============================================================
+
+class HydrologicClassifier(PreclassifiedClassifier):
+    """
+    GloRiC hydrologic class (11-35).
+    1st digit: flow regime variability (1=low, 2=medium, 3=high)
+    2nd digit: average discharge (1=very low ... 5=very high)
+    """
+    name       = "egg_HY"
+    source_col = "class_hydr_gloric"
+
+class PhysioClimaticClassifier(PreclassifiedClassifier):
+    """
+    GloRiC physio-climatic class (111-432).
+    1st digit: minimum temperature
+    2nd digit: climate moisture index (CMI)
+    3rd digit: elevation
+    """
+    name       = "egg_PHY"
+    source_col = "class_phys_gloric"
+
+class LakeWetClassifier(PreclassifiedClassifier):
+    """
+    GloRiC lake-wetland and stream power class (11-22).
+    1st digit: lake-wetland influence
+    2nd digit: stream power
+    """
+    name       = "egg_LW"
+    source_col = "lake_wet_gloric"
+
+class GeomorphicClassifier(PreclassifiedClassifier):
+    """
+    GloRiC combined geomorphic class (111-1043).
+    Combines physio-climatic, hydrologic and geomorphic sub-classifications.
+    """
+    name       = "egg_GE"
+    source_col = "class_geom_gloric"   
 
 
 # class TransportModeClassifier(EggClassifier):

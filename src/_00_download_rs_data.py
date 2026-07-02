@@ -79,6 +79,7 @@ import time
 import math
 from soilgrids import SoilGrids
 import rasterio
+from pathlib import Path
 
 # ============================================================
 # HYDROCRON API
@@ -797,3 +798,98 @@ def download_gdw(out_dir, url="https://ndownloader.figshare.com/files/47913754")
 
     print(f"Extracted {len(extracted)} files to: {out_dir}")
     return out_dir
+
+# ============================================================
+# Download Global River Classification (GloRiC)
+# Source  : https://data.hydrosheds.org/file/hydrosheds-associated/gloric/GloRiC_v10_shapefile.zip
+# Format  : Shapefile
+# License : 
+# ============================================================
+
+def download_gloric_v10(
+    gpkg_path,
+    url="https://data.hydrosheds.org/file/hydrosheds-associated/gloric/GloRiC_v10_shapefile.zip",
+    overwrite=False,
+):
+    """
+    Download Global River Classification (GloRiC), unzip it, and save it as GeoPackage.
+
+    Parameters
+    ----------
+    gpkg_path : str or pathlib.Path
+        Final output path of the GeoPackage, e.g. data/GloRiC_v10.gpkg.
+
+    url : str
+        HydroSHEDS direct download URL for GloRiC v1.0 Shapefile.
+
+    overwrite : bool
+        If False, skip download/conversion when the GeoPackage already exists.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the created GeoPackage.
+    """
+
+    gpkg_path = Path(gpkg_path)
+    out_dir = gpkg_path.parent
+    extract_dir = out_dir / "GloRiC_v10_shapefile"
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if gpkg_path.exists() and not overwrite:
+        print(f"GloRiC v1.0 already exists, skipping: {gpkg_path}")
+        return gpkg_path
+
+    extract_dir.mkdir(parents=True, exist_ok=True)
+
+    print("Downloading GloRiC v1.0...")
+    response = requests.get(url, timeout=300)
+    response.raise_for_status()
+
+    print("Extracting ZIP...")
+    zip_buffer = io.BytesIO(response.content)
+
+    with zipfile.ZipFile(zip_buffer) as zf:
+        zf.extractall(extract_dir)
+        extracted = zf.namelist()
+
+    print(f"Extracted {len(extracted)} files to: {extract_dir}")
+
+    shapefiles = list(extract_dir.rglob("*.shp"))
+
+    if not shapefiles:
+        raise FileNotFoundError(f"No shapefile found in: {extract_dir}")
+
+    print("Found shapefiles:")
+    for shp in shapefiles:
+        print(f" - {shp}")
+
+    shapefiles = list(extract_dir.rglob("*.shp"))
+
+    main_shapefiles = [
+        shp for shp in shapefiles
+        if shp.name == "GloRiC_v10.shp"
+    ]
+
+    if not main_shapefiles:
+        raise FileNotFoundError("Could not find GloRiC_v10.shp")
+
+    # Prefer the one directly inside extract_dir, if present
+    direct_main = extract_dir / "GloRiC_v10.shp"
+
+    if direct_main.exists():
+        shp_path = direct_main
+    else:
+        shp_path = main_shapefiles[0]
+
+    print(f"Using shapefile: {shp_path}")
+
+    print(f"Reading shapefile: {shp_path}")
+    gdf = gpd.read_file(shp_path)
+
+    print(f"Saving GeoPackage: {gpkg_path}")
+    gdf.to_file(gpkg_path, layer="gloric_v10", driver="GPKG")
+
+    print("Done.")
+    return gpkg_path

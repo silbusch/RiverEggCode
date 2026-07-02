@@ -265,4 +265,5 @@ flowchart LR
 | Threshold calibration | Pending | Current breaks are Naryn-specific placeholders |
 | Strahler concept | Pending supervisor | basin_6 vs strahler_segment grouping |
 | Streamlit deployment | Planned | App runs locally, Streamlit Cloud deployment pending |
-A Lot moreeeeeeeeee
+| egg_QT -> Discharge | In progress | what about the discharge profile? Alternative creating discharge class by also using "dis_m3_pyr, dis_m3_pmn and dis_m3_pmx" of RiverATLAS or/and  Log_Q_var or only Class_hydr of GloRiC|
+
