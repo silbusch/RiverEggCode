@@ -18,7 +18,12 @@ from shapely.geometry import mapping
 import pandas as pd
 import sys
 import os
+import subprocess
+from rasterio.features import rasterize as rio_rasterize
+from rasterio.transform import from_bounds
+
 sys.path.append(os.path.dirname(__file__))
+
 
 from _00_config import (
     RASTER_NODATA_THRESHOLD,
@@ -250,3 +255,244 @@ def extract_raster_majority(gdf, raster_path, col_name,
         print(f"Outside: {n_outside}")
 
     return result
+
+# ============================================================
+#
+# Using SAGA to calculate floodplain width, based on Mariams R-Code
+#
+# ============================================================
+
+def rasterize_sword(sword_gdf, dem_path, out_path):
+    """
+    Rasterize SWORD river reaches onto the DEM grid.
+    
+    Creates a binary raster where pixels intersecting SWORD reaches
+    are set to 1 and all other pixels are NoData. This raster serves
+    as the channel network input for SAGA's Vertical Distance and
+    Horizontal Distance tools.
+    
+    Parameters:
+    -----------
+    sword_gdf : GeoDataFrame - SWORD reaches (line geometries)
+    dem_path  : str          - path to reference DEM GeoTIFF
+                               (defines output resolution, extent, CRS)
+    out_path  : str          - path for output raster GeoTIFF
+
+    Returns:
+    --------
+    str - path to output raster
+
+    Notes:
+    ------
+    - SWORD reaches are reprojected to match the DEM CRS before rasterizing
+    - all_touched=True ensures thin lines are captured at 30m resolution
+    - Output dtype is uint8 (1=river, 0=background)
+    - Equivalent to R: rasterize(gang_utm, dem, field=1)
+    """
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+    with rasterio.open(dem_path) as dem_src:
+        dem_crs       = dem_src.crs
+        dem_transform = dem_src.transform
+        dem_shape     = (dem_src.height, dem_src.width)
+        dem_meta      = dem_src.meta.copy()
+
+    # Reproject SWORD to match DEM CRS
+    sword_reproj = sword_gdf.to_crs(dem_crs)
+
+    # Rasterize: burn value 1 where SWORD reaches intersect pixels
+    river_raster = rio_rasterize(
+        [(geom, 1) for geom in sword_reproj.geometry],
+        out_shape   = dem_shape,
+        transform   = dem_transform,
+        fill        = 0,           # background value
+        all_touched = True,        # capture thin lines at 30m resolution
+        dtype       = np.uint8
+    )
+
+    # Save as GeoTIFF
+    dem_meta.update({
+        "dtype"  : "uint8",
+        "count"  : 1,
+        "nodata" : 0
+    })
+
+    with rasterio.open(out_path, "w", **dem_meta) as dst:
+        dst.write(river_raster, 1)
+
+    n_river_pixels = int(river_raster.sum())
+    print(f"SWORD rasterized: {n_river_pixels} river pixels")
+    print(f"Saved: {out_path}")
+    return out_path
+
+
+def compute_mrvbf(dem_path, out_dir, saga_cmd, saga_env,
+                  t_slope=16.0, t_pctl_v=0.4, t_pctl_r=0.35):
+    """
+    Compute Multiresolution Index of Valley Bottom Flatness (MRVBF)
+    from a DEM using SAGA GIS (tool ta_morphometry 8).
+
+    MRVBF identifies valley bottoms at multiple scales:
+        < 0.5  : erosional terrain (hillslopes, ridges)
+        0.5-1.5: steep, narrow valley bottoms
+        > 1.5  : flat, wide valley bottoms (floodplains)
+
+    Gallant & Dowling (2003): A multiresolution index of valley bottom
+    flatness for mapping depositional areas. WRR 39/12:1347-1359.
+
+    Parameters:
+    -----------
+    dem_path  : str   - path to input DEM GeoTIFF (e.g. COP30)
+    out_dir   : str   - directory for output files
+    saga_cmd  : str   - path to saga_cmd.exe
+    saga_env  : dict  - environment variables for subprocess (from _0_config_paths)
+    t_slope   : float - initial slope threshold (default 16% = SAGA default)
+    t_pctl_v  : float - threshold for elevation percentile lowness (default 0.4)
+    t_pctl_r  : float - threshold for elevation percentile upness (default 0.35)
+
+    Returns:
+    --------
+    str - path to output MRVBF GeoTIFF
+
+    Notes:
+    ------
+    - Default thresholds follow Gallant & Dowling (2003) and are suitable
+      for 30m DEMs. For higher resolution DEMs, t_slope may need adjustment.
+    - MRVBF is globally applicable without regional calibration.
+    - Requires SAGA GIS v7.x accessible via saga_cmd.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    out_mrvbf = os.path.join(out_dir, "mrvbf.tif")
+
+    cmd = [
+        saga_cmd, "ta_morphometry", "8",
+        "-DEM",      dem_path,
+        "-MRVBF",    out_mrvbf,
+        "-T_SLOPE",  str(t_slope),
+        "-T_PCTL_V", str(t_pctl_v),
+        "-T_PCTL_R", str(t_pctl_r),
+    ]
+
+    print("Computing MRVBF...")
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        env=saga_env
+    )
+
+    if result.returncode != 0:
+        print(f"SAGA error: {result.stderr[:500]}")
+        return None
+
+    print(f"MRVBF saved: {out_mrvbf}")
+    return out_mrvbf
+
+
+def compute_vertical_distance(dem_path, river_rast_path, out_dir, 
+                               saga_cmd, saga_env):
+    """
+    Compute Vertical Distance to Channel Network (VDCN) using SAGA GIS.
+    
+    Measures how many meters above the nearest channel network each pixel
+    lies. Low values indicate proximity to channel (potential floodplain),
+    high values indicate hillslopes or ridges.
+    
+    Used as one of three indicators in floodplain delineation following
+    the approach of the R script (InnoLab automated floodplain delineation).
+    
+    Parameters:
+    -----------
+    dem_path        : str  - path to input DEM GeoTIFF
+    river_rast_path : str  - path to rasterized river network GeoTIFF
+                             (1 = river, NoData = non-river)
+    out_dir         : str  - directory for output files
+    saga_cmd        : str  - path to saga_cmd.exe
+    saga_env        : dict - environment variables for subprocess
+
+    Returns:
+    --------
+    str - path to output vertical distance GeoTIFF
+
+    Notes:
+    ------
+    - VDCN is globally applicable without regional calibration
+    - Threshold for floodplain delineation is derived from cross-section
+      breakpoint analysis (self-calibrating, see compute_floodplain_width)
+    - SAGA tool: ta_channels 3 (Vertical Distance to Channel Network)
+    """
+    import subprocess
+    import os
+
+    os.makedirs(out_dir, exist_ok=True)
+    out_vd = os.path.join(out_dir, "vertical_distance.tif")
+
+    cmd = [
+        saga_cmd, "ta_channels", "3",
+        "-ELEVATION", dem_path,
+        "-CHANNELS",  river_rast_path,
+        "-DISTANCE",  out_vd,
+    ]
+
+    print("Computing Vertical Distance to Channel Network...")
+    result = subprocess.run(cmd, capture_output=True, text=True, env=saga_env)
+
+    if result.returncode != 0:
+        print(f"SAGA error: {result.stderr[:500]}")
+        return None
+
+    print(f"Vertical distance saved: {out_vd}")
+    return out_vd
+
+def compute_horizontal_distance(river_rast_path, out_dir,
+                                 saga_cmd, saga_env):
+    """
+    Compute Horizontal Distance to Channel Network (proximity grid)
+    using SAGA GIS.
+    
+    Measures the straight-line distance in meters from each pixel to
+    the nearest river channel cell. Low values indicate proximity to
+    channel, high values indicate distance from channel.
+
+    Used as one of three indicators in floodplain delineation following
+    the approach of the R script (InnoLab automated floodplain delineation).
+
+    Parameters:
+    -----------
+    river_rast_path : str  - path to rasterized river network GeoTIFF
+    out_dir         : str  - directory for output files
+    saga_cmd        : str  - path to saga_cmd.exe
+    saga_env        : dict - environment variables for subprocess
+
+    Returns:
+    --------
+    str - path to output horizontal distance GeoTIFF
+
+    Notes:
+    ------
+    - Horizontal distance is globally applicable without calibration
+    - Threshold for floodplain delineation is derived from cross-section
+      breakpoint analysis (self-calibrating)
+    - SAGA tool: grid_tools 10 (Proximity Grid)
+    """
+    import subprocess
+    import os
+
+    os.makedirs(out_dir, exist_ok=True)
+    out_hd = os.path.join(out_dir, "horizontal_distance.tif")
+
+    cmd = [
+        saga_cmd, "grid_tools", "10",
+        "-FEATURES", river_rast_path,
+        "-DISTANCE", out_hd,
+    ]
+
+    print("Computing Horizontal Distance to Channel Network...")
+    result = subprocess.run(cmd, capture_output=True, text=True, env=saga_env)
+
+    if result.returncode != 0:
+        print(f"SAGA error: {result.stderr[:500]}")
+        return None
+
+    print(f"Horizontal distance saved: {out_hd}")
+    return out_hd
