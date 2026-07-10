@@ -80,6 +80,10 @@ import math
 from soilgrids import SoilGrids
 import rasterio
 from pathlib import Path
+import boto3
+from botocore import UNSIGNED
+from botocore.config import Config
+from rasterio.merge import merge
 
 from _00_config import STUDY_AREA, PFAF_IDS, PFAF_LEVEL_DIGITS
 
@@ -684,7 +688,7 @@ def download_soilgrids(bbox,
             downloaded.append(out_path)
             continue
         
-        print(f"Downloading: {coverage_id} – {description}")
+        print(f"Downloading: {coverage_id} - {description}")
         soil_grids.get_coverage_data(
             service_id  = service_id,
             coverage_id = coverage_id,
@@ -707,190 +711,210 @@ def download_soilgrids(bbox,
 # MERIT DEM Download via OpenTopography API
 # Downloads MERIT DEM for the study area bounding box
 # ============================================================
-
-# def download_opentopo_dem(bbox, out_path, api_key, demtype="COP30", buffer_deg=0.1):
+# def download_opentopo_dem(bbox, out_path, api_key, demtype="COP30", 
+#                            buffer_deg=0.1, clip_to_basins=None,
+#                            pfaf_ids=None, nodata_value=-9999):
 #     """
 #     Download DEM/DSM from OpenTopography Global Datasets API.
+#     Optionally clips to HydroBASINS Level 5 polygons and masks NoData values.
 
-#     bbox: (minx, miny, maxx, maxy) in EPSG:4326
-#     demtype examples: COP30, COP90, NASADEM, SRTMGL1, SRTMGL3, AW3D30
+#     Parameters:
+#     -----------
+#     bbox            : tuple  - (minx, miny, maxx, maxy) in EPSG:4326
+#     out_path        : str    - output path for downloaded GeoTIFF
+#     api_key         : str    - OpenTopography API key
+#     demtype         : str    - dataset type (COP30, COP90, NASADEM, etc.)
+#     buffer_deg      : float  - buffer around bbox in degrees (default 0.1)
+#     clip_to_basins  : str    - path to HydroBASINS Level 5 GeoPackage/Shapefile
+#                                If None, no clipping is performed
+#     pfaf_ids        : list   - list of PFAF_IDs (5-digit) to select basins
+#                                If None, all basins within bbox are used
+#     nodata_value    : float  - NoData value to mask in output (default -9999)
+
+#     Returns:
+#     --------
+#     str - path to downloaded (and optionally clipped) GeoTIFF
+    
+#     Notes:
+#     ------
+#     - NoData pixels (values <= nodata_value) are masked to np.nan
+#     - COP30 uses -9999 as NoData sentinel
+#     - Clipping uses HydroBASINS Level 5 PFAF_IDs which correspond to
+#       the first 5 digits of SWORD reach_id (CBBBBB format)
 #     """
-#     minx, miny, maxx, maxy = map(float, bbox)
+#     import requests
+#     import os
+#     import numpy as np
+#     import rasterio
+#     from rasterio.mask import mask as rio_mask
+#     import geopandas as gpd
 
+#     minx, miny, maxx, maxy = map(float, bbox)
 #     params = {
-#         "demtype": demtype,
-#         "south": miny - buffer_deg,
-#         "north": maxy + buffer_deg,
-#         "west": minx - buffer_deg,
-#         "east": maxx + buffer_deg,
+#         "demtype"     : demtype,
+#         "south"       : miny - buffer_deg,
+#         "north"       : maxy + buffer_deg,
+#         "west"        : minx - buffer_deg,
+#         "east"        : maxx + buffer_deg,
 #         "outputFormat": "GTiff",
-#         "API_Key": api_key,
+#         "API_Key"     : api_key,
 #     }
 
 #     url = "https://portal.opentopography.org/API/globaldem"
-
 #     print(f"Downloading {demtype} for bbox: {bbox}...")
-#     response = requests.get(url, params=params, stream=True, timeout=120)
+#     response = requests.get(url, params=params, stream=True, timeout=300)
 
 #     if response.status_code != 200:
-#         print("Requested URL:", response.url)
 #         print(f"Error {response.status_code}: {response.text[:1000]}")
 #         return None
 
 #     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
-#     with open(out_path, "wb") as f:
+#     # Save raw download to temporary path first
+#     tmp_path = out_path.replace(".tif", "_raw.tif")
+#     with open(tmp_path, "wb") as f:
 #         for chunk in response.iter_content(chunk_size=8192):
 #             if chunk:
 #                 f.write(chunk)
+#     print(f"Raw download saved: {tmp_path}")
 
-#     print(f"Saved: {out_path}")
+#     # --------------------------------------------------------
+#     # Step 1: Mask NoData values
+#     # --------------------------------------------------------
+#     with rasterio.open(tmp_path) as src:
+#         data = src.read(1).astype("float32")
+#         meta = src.meta.copy()
+
+#         # Mask values at or below nodata threshold
+#         data[data <= nodata_value] = np.nan
+
+#         meta.update({
+#             "dtype"  : "float32",
+#             "nodata" : np.nan
+#         })
+
+#         # Save masked version
+#         masked_path = out_path.replace(".tif", "_masked.tif")
+#         with rasterio.open(masked_path, "w", **meta) as dst:
+#             dst.write(data, 1)
+
+#     print(f"NoData masked: {masked_path}")
+
+#     # --------------------------------------------------------
+#     # Step 2: Clip to HydroBASINS Level 5 (optional)
+#     # --------------------------------------------------------
+#     if clip_to_basins is not None:
+#         print(f"Loading HydroBASINS from: {clip_to_basins}")
+#         basins = gpd.read_file(clip_to_basins, bbox=tuple(map(float, bbox)))
+
+#         # Filter by PFAF_IDs if provided
+#         if pfaf_ids is not None:
+#             basins = basins[basins["PFAF_ID"].isin(pfaf_ids)]
+#             print(f"Selected {len(basins)} basins for PFAF_IDs: {pfaf_ids}")
+
+#         if len(basins) == 0:
+#             print("WARNING: No basins found for given PFAF_IDs - skipping clip")
+#             os.rename(masked_path, out_path)
+#             os.remove(tmp_path)
+#             return out_path
+
+#         # Reproject basins to match DEM CRS if needed
+#         with rasterio.open(masked_path) as src:
+#             if basins.crs != src.crs:
+#                 basins = basins.to_crs(src.crs)
+
+#             # Clip DEM to basin polygons
+#             clipped, clipped_transform = rio_mask(
+#                 src,
+#                 basins.geometry.values,
+#                 crop    = True,
+#                 nodata  = np.nan
+#             )
+#             clipped_meta = src.meta.copy()
+#             clipped_meta.update({
+#                 "height"   : clipped.shape[1],
+#                 "width"    : clipped.shape[2],
+#                 "transform": clipped_transform,
+#                 "nodata"   : np.nan
+#             })
+
+#         with rasterio.open(out_path, "w", **clipped_meta) as dst:
+#             dst.write(clipped)
+
+#         print(f"Clipped to basins: {out_path}")
+
+#         # Cleanup temporary files
+#         os.remove(tmp_path)
+#         os.remove(masked_path)
+
+#     else:
+#         # No clipping - just use masked version as final output
+#         os.rename(masked_path, out_path)
+#         os.remove(tmp_path)
+
+#     print(f"Final DEM saved: {out_path}")
 #     return out_path
-
-from _00_config import STUDY_AREA, PFAF_IDS, PFAF_LEVEL_DIGITS
-
-def download_opentopo_dem(bbox, out_path, api_key, demtype="COP30", 
-                           buffer_deg=0.1, clip_to_basins=None,
-                           pfaf_ids=None, nodata_value=-9999):
+# ============================================================
+# Download Copernicus DEM 30m from AWS S3
+# ============================================================
+def download_cop30_aws(bbox, out_path):
     """
-    Download DEM/DSM from OpenTopography Global Datasets API.
-    Optionally clips to HydroBASINS Level 5 polygons and masks NoData values.
-
-    Parameters:
-    -----------
-    bbox            : tuple  - (minx, miny, maxx, maxy) in EPSG:4326
-    out_path        : str    - output path for downloaded GeoTIFF
-    api_key         : str    - OpenTopography API key
-    demtype         : str    - dataset type (COP30, COP90, NASADEM, etc.)
-    buffer_deg      : float  - buffer around bbox in degrees (default 0.1)
-    clip_to_basins  : str    - path to HydroBASINS Level 5 GeoPackage/Shapefile
-                               If None, no clipping is performed
-    pfaf_ids        : list   - list of PFAF_IDs (5-digit) to select basins
-                               If None, all basins within bbox are used
-    nodata_value    : float  - NoData value to mask in output (default -9999)
-
-    Returns:
-    --------
-    str - path to downloaded (and optionally clipped) GeoTIFF
+    Download Copernicus DEM 30m from AWS S3.
+    Much faster than OpenTopography - direct tile access, no API key needed.
     
-    Notes:
-    ------
-    - NoData pixels (values <= nodata_value) are masked to np.nan
-    - COP30 uses -9999 as NoData sentinel
-    - Clipping uses HydroBASINS Level 5 PFAF_IDs which correspond to
-      the first 5 digits of SWORD reach_id (CBBBBB format)
+    Tiles are 1°x1° at naming convention:
+    Copernicus_DSM_COG_10_N41_00_E071_00_DEM.tif
     """
-    import requests
-    import os
-    import numpy as np
-    import rasterio
-    from rasterio.mask import mask as rio_mask
-    import geopandas as gpd
 
-    minx, miny, maxx, maxy = map(float, bbox)
-    params = {
-        "demtype"     : demtype,
-        "south"       : miny - buffer_deg,
-        "north"       : maxy + buffer_deg,
-        "west"        : minx - buffer_deg,
-        "east"        : maxx + buffer_deg,
-        "outputFormat": "GTiff",
-        "API_Key"     : api_key,
-    }
+    minx, miny, maxx, maxy = bbox
+    
+    # Generate tile names for bbox
+    tiles = []
+    for lat in range(int(math.floor(miny)), int(math.ceil(maxy))):
+        for lon in range(int(math.floor(minx)), int(math.ceil(maxx))):
+            ns = "N" if lat >= 0 else "S"
+            ew = "E" if lon >= 0 else "W"
+            tile = f"Copernicus_DSM_COG_10_{ns}{abs(lat):02d}_00_{ew}{abs(lon):03d}_00_DEM/Copernicus_DSM_COG_10_{ns}{abs(lat):02d}_00_{ew}{abs(lon):03d}_00_DEM.tif"
+            tiles.append(tile)
 
-    url = "https://portal.opentopography.org/API/globaldem"
-    print(f"Downloading {demtype} for bbox: {bbox}...")
-    response = requests.get(url, params=params, stream=True, timeout=300)
+    # Download from AWS S3 (anonymous access)
+    s3 = boto3.client("s3", config=Config(signature_version=UNSIGNED))
+    bucket = "copernicus-dem-30m"
+    
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    downloaded = []
+    
+    for tile in tiles:
+        tmp = out_path.replace(".tif", f"_tile_{len(downloaded)}.tif")
+        try:
+            s3.download_file(bucket, tile, tmp)
+            downloaded.append(tmp)
+            print(f"Downloaded: {tile}")
+        except Exception as e:
+            print(f"Tile not found (water/no data): {tile}")
 
-    if response.status_code != 200:
-        print(f"Error {response.status_code}: {response.text[:1000]}")
+    if not downloaded:
+        print("No tiles downloaded")
         return None
 
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    # Merge tiles
+    datasets = [rasterio.open(t) for t in downloaded]
+    merged, transform = merge(datasets)
+    for ds in datasets:
+        ds.close()
 
-    # Save raw download to temporary path first
-    tmp_path = out_path.replace(".tif", "_raw.tif")
-    with open(tmp_path, "wb") as f:
-        for chunk in response.iter_content(chunk_size=8192):
-            if chunk:
-                f.write(chunk)
-    print(f"Raw download saved: {tmp_path}")
+    meta = datasets[0].meta.copy()
+    meta.update({"height": merged.shape[1], "width": merged.shape[2],
+                 "transform": transform})
 
-    # --------------------------------------------------------
-    # Step 1: Mask NoData values
-    # --------------------------------------------------------
-    with rasterio.open(tmp_path) as src:
-        data = src.read(1).astype("float32")
-        meta = src.meta.copy()
+    with rasterio.open(out_path, "w", **meta) as dst:
+        dst.write(merged)
 
-        # Mask values at or below nodata threshold
-        data[data <= nodata_value] = np.nan
+    # Cleanup tiles
+    for tmp in downloaded:
+        os.remove(tmp)
 
-        meta.update({
-            "dtype"  : "float32",
-            "nodata" : np.nan
-        })
-
-        # Save masked version
-        masked_path = out_path.replace(".tif", "_masked.tif")
-        with rasterio.open(masked_path, "w", **meta) as dst:
-            dst.write(data, 1)
-
-    print(f"NoData masked: {masked_path}")
-
-    # --------------------------------------------------------
-    # Step 2: Clip to HydroBASINS Level 5 (optional)
-    # --------------------------------------------------------
-    if clip_to_basins is not None:
-        print(f"Loading HydroBASINS from: {clip_to_basins}")
-        basins = gpd.read_file(clip_to_basins, bbox=tuple(map(float, bbox)))
-
-        # Filter by PFAF_IDs if provided
-        if pfaf_ids is not None:
-            basins = basins[basins["PFAF_ID"].isin(pfaf_ids)]
-            print(f"Selected {len(basins)} basins for PFAF_IDs: {pfaf_ids}")
-
-        if len(basins) == 0:
-            print("WARNING: No basins found for given PFAF_IDs – skipping clip")
-            os.rename(masked_path, out_path)
-            os.remove(tmp_path)
-            return out_path
-
-        # Reproject basins to match DEM CRS if needed
-        with rasterio.open(masked_path) as src:
-            if basins.crs != src.crs:
-                basins = basins.to_crs(src.crs)
-
-            # Clip DEM to basin polygons
-            clipped, clipped_transform = rio_mask(
-                src,
-                basins.geometry.values,
-                crop    = True,
-                nodata  = np.nan
-            )
-            clipped_meta = src.meta.copy()
-            clipped_meta.update({
-                "height"   : clipped.shape[1],
-                "width"    : clipped.shape[2],
-                "transform": clipped_transform,
-                "nodata"   : np.nan
-            })
-
-        with rasterio.open(out_path, "w", **clipped_meta) as dst:
-            dst.write(clipped)
-
-        print(f"Clipped to basins: {out_path}")
-
-        # Cleanup temporary files
-        os.remove(tmp_path)
-        os.remove(masked_path)
-
-    else:
-        # No clipping – just use masked version as final output
-        os.rename(masked_path, out_path)
-        os.remove(tmp_path)
-
-    print(f"Final DEM saved: {out_path}")
+    print(f"Merged DEM saved: {out_path}")
     return out_path
 
 # ============================================================

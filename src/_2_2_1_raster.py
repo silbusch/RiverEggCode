@@ -21,6 +21,10 @@ import os
 import subprocess
 from rasterio.features import rasterize as rio_rasterize
 from rasterio.transform import from_bounds
+from shapely.geometry import LineString, Point
+
+
+
 
 sys.path.append(os.path.dirname(__file__))
 
@@ -496,3 +500,4 @@ def compute_horizontal_distance(river_rast_path, out_dir,
 
     print(f"Horizontal distance saved: {out_hd}")
     return out_hd
+
