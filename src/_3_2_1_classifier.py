@@ -87,7 +87,9 @@ class SlopeClassifier(EggClassifier):
             include_lowest=True
         ).astype("Int64")
 
-
+#=======================================================================
+# PLANFORM ---> dasselbe wie braided Index?
+#=======================================================================
 class PlanformClassifier(EggClassifier):
     name = "egg_PL"
     source_col = "n_chan_mod"
@@ -129,6 +131,9 @@ class PlanformClassifier(EggClassifier):
 # oder aus GloRiC:
 # Log_Q_var   - Flow Variability Index = max. monatlicher Q / Jahresmittel
 # Class_hydr  - bereits beide Dimensionen kombiniert (Mittelwert + Variabilität)
+#=======================================================================
+# DISCHARGE
+#=======================================================================
 class DischargeClassifier(EggClassifier):
     name = "egg_QT"
     source_col = "facc"
@@ -145,6 +150,57 @@ class DischargeClassifier(EggClassifier):
             labels=self.labels,
             include_lowest=True
         ).astype("string")
+
+# NOTE: To-Do:
+#=======================================================================
+# RIVER TYPE
+#=======================================================================
+# Die sieben River Types (plus Typ 0) im Überblick:
+# Basierend auf diesen Kriterien ergeben sich folgende Typen:
+# Typ 1: Begrenzt, einbettig (Sinuosität spielt hier keine Rolle, da der Verlauf durch das Tal vorgegeben ist)
+# Typ 2: Unbegrenzt, einbettig: gerade (straight)
+# Typ 3: Unbegrenzt, einbettig: sinuös (sinuous)
+# Typ 4: Unbegrenzt, einbettig: mäandrierend (meandering)
+# Typ 5: Übergangsform: „wandering“ (wandering)
+# Typ 6: Mehrbettig: verzweigt (braided)
+# Typ 7: Mehrbettig: anabranching (verzweigt mit stabilen Inseln)
+# 
+# benötigt für die Bestimmung wird: [] Sinuositätsindex (Si), [] Verzweigungsindex/ braided Index und
+# [] Anabraching Index 8durchschnittliche nazahl aktiver Gerinnearme
+
+#=======================================================================
+# CONFINEMENT
+#=======================================================================
+class ConfinementClassifier(EggClassifier):
+    """
+    Classifies SWORD reaches by valley confinement following
+    Rinaldi et al. (2016) Basic River Typology (BRT).
+
+    Source: column confinement_pct_rinaldi computed by compute_confinement_rinaldi() in _3_1_compute_features.py
+
+    Classes:
+        1 = unconfined        (< 10% of banks in contact with hillslopes)
+        2 = partly confined   (10-90%)
+        3 = confined          (> 90%)
+
+    Reference: Rinaldi et al. (2016) DOI: 10.1016/j.geomorph.2015.12.002
+               Brierley & Fryirs (2005)
+    """
+    name       = "egg_CF"
+    source_col = "confinement_pct_rinaldi"
+    available  = True
+
+    breaks = [0.0, 10.0, 90.0, 100.0]
+    labels = [1, 2, 3]   # 1=unconfined, 2=partly, 3=confined
+
+    def classify(self, gdf):
+        return pd.cut(
+            gdf[self.source_col],
+            bins           = self.breaks,
+            labels         = self.labels,
+            include_lowest = True
+        ).astype("Int64")
+    
 
 
 class PreclassifiedClassifier(EggClassifier):

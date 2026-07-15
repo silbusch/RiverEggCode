@@ -22,6 +22,10 @@ import numpy as np
 import os
 from shapely.geometry import LineString, Point
 import geopandas as gpd
+from tqdm import tqdm
+from rasterio.mask import mask as rio_mask
+
+
 
 def build_sword_graph(sword, direction="upstream"):
     """
@@ -64,6 +68,8 @@ def build_sword_graph(sword, direction="upstream"):
     print(f"Graph edges: {G.number_of_edges()}")
 
     return G
+
+
 
 
 # ============================================================
@@ -128,105 +134,108 @@ def compute_cross_sections(sword_gdf, dem_path, vd_path, hd_path, mrvbf_path,
         "mrvbf"    : mrvbf_path,
     }
 
-    for name, path in raster_paths.items():
-        rasters[name] = rasterio.open(path)
+    for _, reach in tqdm(sword_m.iterrows(), 
+                        total=len(sword_m),
+                        desc="Computing cross-sections"):
+        for name, path in raster_paths.items():
+            rasters[name] = rasterio.open(path)
 
-    all_rows = []
-    section_counter = 0
+        all_rows = []
+        section_counter = 0
 
-    for _, reach in sword_m.iterrows():
-        geom = reach.geometry
-        reach_id = reach["reach_id"]
-        reach_len = geom.length
+        for _, reach in sword_m.iterrows():
+            geom = reach.geometry
+            reach_id = reach["reach_id"]
+            reach_len = geom.length
 
-        if reach_len == 0:
-            continue
-
-        # Sample n_sections points equally spaced along the reach
-        sample_distances = np.linspace(0, reach_len, n_sections + 2)[1:-1]
-
-        for i, dist_along in enumerate(sample_distances):
-            section_counter += 1
-            center_point = geom.interpolate(dist_along)
-
-            # Compute flow direction from local reach geometry
-            # Use a small segment around the sample point
-            d1 = max(0, dist_along - 50)
-            d2 = min(reach_len, dist_along + 50)
-            p1 = geom.interpolate(d1)
-            p2 = geom.interpolate(d2)
-
-            dx = p2.x - p1.x
-            dy = p2.y - p1.y
-            norm = np.sqrt(dx**2 + dy**2)
-
-            if norm == 0:
+            if reach_len == 0:
                 continue
 
-            # Perpendicular direction (rotate flow vector 90°)
-            perp_x = -dy / norm
-            perp_y =  dx / norm
+            # Sample n_sections points equally spaced along the reach
+            sample_distances = np.linspace(0, reach_len, n_sections + 2)[1:-1]
 
-            # Create transect endpoints
-            cx, cy = center_point.x, center_point.y
-            start = Point(cx + perp_x * half_width_m,
-                         cy + perp_y * half_width_m)
-            end   = Point(cx - perp_x * half_width_m,
-                         cy - perp_y * half_width_m)
-            transect = LineString([start, end])
+            for i, dist_along in enumerate(sample_distances):
+                section_counter += 1
+                center_point = geom.interpolate(dist_along)
 
-            # Sample points along transect
-            distances = np.linspace(-half_width_m, half_width_m,
-                                    points_per_transect)
-            sample_points = [transect.interpolate(
-                (d + half_width_m) / (2 * half_width_m),
-                normalized=True
-            ) for d in distances]
+                # Compute flow direction from local reach geometry
+                # Use a small segment around the sample point
+                d1 = max(0, dist_along - 50)
+                d2 = min(reach_len, dist_along + 50)
+                p1 = geom.interpolate(d1)
+                p2 = geom.interpolate(d2)
 
-            # Extract raster values at each point
-            for j, (pt, d) in enumerate(zip(sample_points, distances)):
-                row = {
-                    "section_id": section_counter,
-                    "reach_id"  : reach_id,
-                    "distance"  : d,
-                    "X"         : pt.x,
-                    "Y"         : pt.y,
-                }
+                dx = p2.x - p1.x
+                dy = p2.y - p1.y
+                norm = np.sqrt(dx**2 + dy**2)
 
-                # Extract value from each raster
-                for name, src in rasters.items():
-                    try:
-                        # Convert to raster CRS if needed
-                        pt_raster = pt
-                        if src.crs.to_epsg() != int(crs_meters.split(":")[-1]):
-                            pt_wgs84 = gpd.GeoSeries(
-                                [pt], crs=crs_meters
-                            ).to_crs(src.crs).iloc[0]
-                            pt_raster = pt_wgs84
+                if norm == 0:
+                    continue
 
-                        val = list(src.sample(
-                            [(pt_raster.x, pt_raster.y)]
-                        ))[0][0]
+                # Perpendicular direction (rotate flow vector 90°)
+                perp_x = -dy / norm
+                perp_y =  dx / norm
 
-                        # Mask nodata
-                        if src.nodata is not None and val == src.nodata:
-                            val = np.nan
-                        row[name] = float(val)
+                # Create transect endpoints
+                cx, cy = center_point.x, center_point.y
+                start = Point(cx + perp_x * half_width_m,
+                            cy + perp_y * half_width_m)
+                end   = Point(cx - perp_x * half_width_m,
+                            cy - perp_y * half_width_m)
+                transect = LineString([start, end])
 
-                    except Exception:
-                        row[name] = np.nan
+                # Sample points along transect
+                distances = np.linspace(-half_width_m, half_width_m,
+                                        points_per_transect)
+                sample_points = [transect.interpolate(
+                    (d + half_width_m) / (2 * half_width_m),
+                    normalized=True
+                ) for d in distances]
 
-                all_rows.append(row)
+                # Extract raster values at each point
+                for j, (pt, d) in enumerate(zip(sample_points, distances)):
+                    row = {
+                        "section_id": section_counter,
+                        "reach_id"  : reach_id,
+                        "distance"  : d,
+                        "X"         : pt.x,
+                        "Y"         : pt.y,
+                    }
 
-    # Close rasters
-    for src in rasters.values():
-        src.close()
+                    # Extract value from each raster
+                    for name, src in rasters.items():
+                        try:
+                            # Convert to raster CRS if needed
+                            pt_raster = pt
+                            if src.crs.to_epsg() != int(crs_meters.split(":")[-1]):
+                                pt_wgs84 = gpd.GeoSeries(
+                                    [pt], crs=crs_meters
+                                ).to_crs(src.crs).iloc[0]
+                                pt_raster = pt_wgs84
 
-    df = pd.DataFrame(all_rows)
-    df = df.dropna(subset=["elevation"])
+                            val = list(src.sample(
+                                [(pt_raster.x, pt_raster.y)]
+                            ))[0][0]
 
-    print(f"Cross-sections generated: {df['section_id'].nunique()}")
-    print(f"Total sample points: {len(df)}")
+                            # Mask nodata
+                            if src.nodata is not None and val == src.nodata:
+                                val = np.nan
+                            row[name] = float(val)
+
+                        except Exception:
+                            row[name] = np.nan
+
+                    all_rows.append(row)
+
+        # Close rasters
+        for src in rasters.values():
+            src.close()
+
+        df = pd.DataFrame(all_rows)
+        df = df.dropna(subset=["elevation"])
+
+        print(f"Cross-sections generated: {df['section_id'].nunique()}")
+        print(f"Total sample points: {len(df)}")
 
     return df
 
@@ -279,13 +288,15 @@ def find_breakpoints(cs_df):
             row["vd_break_dist"] = np.nan
             row["vd_break_val"]  = np.nan
 
-        # HD breakpoint – distance of maximum absolute gradient
+        # HD breakpoint – 75th percentile of HD values along cross-section
+        # More robust than maximum gradient for smooth HD curves.
+        # Adapts automatically to local valley width.
         if len(g_hd) >= 2:
-            hd_grad = np.gradient(g_hd["hd"].values,
-                                  g_hd["distance"].values)
-            idx = np.argmax(np.abs(hd_grad))
-            row["hd_break_dist"] = g_hd["distance"].iloc[idx]
-            row["hd_break_val"]  = g_hd["hd"].iloc[idx]
+            hd_break_val = float(np.percentile(g_hd["hd"].values, 75))
+            # Find distance closest to this HD value
+            idx = (g_hd["hd"] - hd_break_val).abs().idxmin()
+            row["hd_break_dist"] = g_hd.loc[idx, "distance"]
+            row["hd_break_val"]  = hd_break_val
         else:
             row["hd_break_dist"] = np.nan
             row["hd_break_val"]  = np.nan
@@ -426,3 +437,279 @@ def compute_floodplain_probability(vd_path, hd_path, mrvbf_path, thresholds,
     print(f"  Mean:  {valid.mean():.3f}")
 
     return out_path
+
+
+def compute_valley_width(sword_gdf, flood_prob_path, 
+                          threshold=0.5,
+                          crs_meters="EPSG:32643"):
+    """
+    Compute valley width per SWORD reach from floodplain probability map
+    (see function compute_floodplain_probability).
+    
+    For each SWORD reach, extracts all floodplain pixels within a buffer
+    and estimates valley width as the mean cross-sectional width of the
+    floodplain mask.
+
+    Method:
+    -------
+    1. For each SWORD reach: create a buffer of reach_length/2
+    2. Extract floodplain pixels (probability >= threshold) within buffer
+    3. Valley width = floodplain area / reach_length
+
+    Parameters:
+    -----------
+    sword_gdf       : GeoDataFrame - SWORD reaches
+    flood_prob_path : str  - path to floodplain probability raster
+    threshold       : float - minimum probability to classify as floodplain
+                              (default 0.5 = 50% probability)
+    crs_meters      : str  - projected CRS for area calculations
+
+    Returns:
+    --------
+    pd.Series - valley width in meters per reach (index matches sword_gdf)
+
+    Notes:
+    ------
+    - Valley width = floodplain area / reach length
+      (approximates mean cross-sectional width)
+    - Reaches with no floodplain pixels get valley_width = channel_width
+      (confined assumption: valley = channel)
+    - threshold=0.5 follows standard fuzzy classification convention
+    """
+    sword_m = sword_gdf.to_crs(crs_meters).copy()
+    valley_widths = []
+
+    with rasterio.open(flood_prob_path) as src:
+        pixel_area = abs(src.res[0] * src.res[1])  # m² per pixel
+
+        for _, reach in tqdm(sword_m.iterrows(),
+                             total=len(sword_m),
+                             desc="Computing valley width"):
+            reach_len = reach.geometry.length
+            if reach_len == 0:
+                valley_widths.append(np.nan)
+                continue
+
+            # Buffer around reach to extract nearby floodplain pixels
+            buffer = reach.geometry.buffer(reach_len / 2)
+
+            try:
+                # Extract floodplain probability within buffer
+                clipped, _ = rio_mask(src, [buffer], crop=True, nodata=-9999)
+                prob = clipped[0].astype("float32")
+                prob[prob == -9999] = np.nan
+
+                # Count floodplain pixels above threshold
+                fp_pixels = np.nansum(prob >= threshold)
+                fp_area_m2 = fp_pixels * pixel_area
+
+                # Valley width = floodplain area / reach length
+                valley_width = fp_area_m2 / reach_len
+
+            except Exception:
+                valley_width = np.nan
+
+            valley_widths.append(valley_width)
+
+    return pd.Series(valley_widths, index=sword_gdf.index, name="valley_width_m")
+
+
+
+
+
+#===================================================================================
+# CONFINEMENT
+#===================================================================================
+def compute_confinement_rinaldi(sword_gdf, dem_path,
+                                 slope_quantile=None,
+                                 slope_threshold_deg=None,
+                                 bank_search_m=50.0,
+                                 sample_spacing_m=100.0,
+                                 crs_meters="EPSG:32643"):
+    """
+    Compute valley confinement per SWORD reach following Rinaldi et al. (2016).
+
+    Confinement is defined as the percentage of river bank length that is
+    in direct contact with hillslopes or ancient terraces (Brierley & Fryirs
+    2005, Rinaldi et al. 2012, 2013, 2016).
+
+    Method:
+    -------
+    For each SWORD reach:
+    1. Sample points every sample_spacing_m along the reach
+    2. At each point: extract DEM slope within bank_search_m perpendicular
+       to flow direction on both left and right bank
+    3. A bank point is "confined" if max slope within bank_search_m > threshold
+    4. Confinement % = confined bank points / total bank points * 100
+
+    Classification (Rinaldi et al. 2016):
+        confined        : > 90% of banks in contact with hillslopes
+        partly confined : 10-90%
+        unconfined      : < 10%
+
+    Parameters:
+    -----------
+    sword_gdf           : GeoDataFrame - SWORD reaches
+    dem_path            : str   - path to DEM GeoTIFF (metric CRS)
+    slope_quantile      : float - quantile of local DEM slopes used as
+                                  hillslope threshold (e.g. 0.25 = 25th percentile)
+                                  Adapts automatically to local topography.
+                                  Use either slope_quantile OR slope_threshold_deg.
+    slope_threshold_deg : float - fixed slope threshold in degrees (e.g. 10.0)
+                                  Use either slope_quantile OR slope_threshold_deg.
+    bank_search_m       : float - distance from bank to search for hillslope (default 50m)
+    sample_spacing_m    : float - spacing between sample points along reach (default 100m)
+    crs_meters          : str   - projected CRS for calculations
+
+    Returns:
+    --------
+    pd.Series - confinement percentage per reach (0-100)
+
+    Notes:
+    ------
+    - slope_threshold_deg=10° is a conservative threshold for hillslopes
+      (Rinaldi et al. use qualitative field assessment - this is an approximation)
+    - bank_search_m=50m compensates for SWORD positional uncertainty (~200m)
+      NOTE: may need to increase to 200m for better SWORD offset compensation
+    - Slope is computed from DEM using finite differences (no SAGA required)
+    - Global applicability: all parameters are physically motivated
+      and should not require regional calibration
+    - Pending: validation against field-based confinement assessments
+    """
+
+        # --------------------------------------------------------
+    # Validate slope threshold input
+    # --------------------------------------------------------
+    if slope_quantile is not None and slope_threshold_deg is not None:
+        raise ValueError(
+            "Specify either slope_quantile OR slope_threshold_deg, not both. "
+            "Use slope_quantile for adaptive threshold (recommended for global use), "
+            "or slope_threshold_deg for a fixed threshold."
+        )
+    if slope_quantile is None and slope_threshold_deg is None:
+        raise ValueError(
+            "Must specify either slope_quantile or slope_threshold_deg. "
+            "Recommended: slope_quantile=0.25 for global use."
+        )
+
+    # --------------------------------------------------------
+    # Compute slope threshold
+    # --------------------------------------------------------
+    with rasterio.open(dem_path) as src:
+        dem_data   = src.read(1).astype("float32")
+        pixel_size = src.res[0]
+        nodata     = src.nodata or -9999
+
+        if slope_quantile is not None:
+            # Adaptive threshold from local DEM slopes
+            dy, dx     = np.gradient(dem_data, pixel_size)
+            slope_deg  = np.degrees(np.arctan(np.sqrt(dx**2 + dy**2)))
+            valid      = slope_deg[dem_data != nodata]
+            threshold  = float(np.percentile(valid, slope_quantile * 100))
+            print(f"Slope threshold (p{slope_quantile*100:.0f}): {threshold:.1f}°")
+        else:
+            # Fixed threshold
+            threshold = float(slope_threshold_deg)
+            print(f"Slope threshold: {threshold:.1f}°")
+
+    with rasterio.open(dem_path) as src:
+        dem_data = src.read(1).astype("float32")
+        pixel_size = src.res[0]
+
+        # Compute slope from DEM using finite differences
+        dy, dx = np.gradient(dem_data, pixel_size)
+        slope_rad = np.arctan(np.sqrt(dx**2 + dy**2))
+        slope_deg = np.degrees(slope_rad)
+
+        # Remove nodata
+        valid_slopes = slope_deg[dem_data != (src.nodata or -9999)]
+        slope_threshold_deg = float(np.percentile(valid_slopes, slope_quantile * 100))
+        print(f"Slope threshold (p{slope_quantile*100:.0f}): {slope_threshold_deg:.1f}°")
+
+    sword_m = sword_gdf.to_crs(crs_meters).copy()
+    confinement_pct = []
+
+    with rasterio.open(dem_path) as dem_src:
+        pixel_size = dem_src.res[0]  # meters per pixel
+
+        for _, reach in tqdm(sword_m.iterrows(),
+                             total=len(sword_m),
+                             desc="Computing Rinaldi confinement"):
+            geom     = reach.geometry
+            reach_len = geom.length
+
+            if reach_len == 0:
+                confinement_pct.append(np.nan)
+                continue
+
+            # Sample points along reach
+            n_pts = max(3, int(reach_len / sample_spacing_m))
+            sample_dists = np.linspace(0, reach_len, n_pts)
+
+            confined_count = 0
+            total_count    = 0
+
+            for d in sample_dists:
+                center = geom.interpolate(d)
+
+                # Flow direction at this point
+                d1 = max(0, d - 20)
+                d2 = min(reach_len, d + 20)
+                p1 = geom.interpolate(d1)
+                p2 = geom.interpolate(d2)
+                dx = p2.x - p1.x
+                dy = p2.y - p1.y
+                norm = np.sqrt(dx**2 + dy**2)
+                if norm == 0:
+                    continue
+
+                # Perpendicular direction
+                perp_x = -dy / norm
+                perp_y =  dx / norm
+
+                # Check left and right bank separately
+                for side in [1, -1]:
+                    total_count += 1
+                    confined = False
+
+                    # Sample DEM along bank_search_m perpendicular
+                    n_bank = max(3, int(bank_search_m / pixel_size))
+                    bank_dists = np.linspace(0, bank_search_m, n_bank)
+
+                    elevations = []
+                    for bd in bank_dists:
+                        px = center.x + side * perp_x * bd
+                        py = center.y + side * perp_y * bd
+                        try:
+                            val = list(dem_src.sample([(px, py)]))[0][0]
+                            if dem_src.nodata is None or val != dem_src.nodata:
+                                elevations.append(float(val))
+                        except Exception:
+                            pass
+
+                    if len(elevations) >= 2:
+                        # Compute slope along bank transect
+                        elev_arr = np.array(elevations)
+                        dist_arr = np.linspace(0, bank_search_m, len(elev_arr))
+                        slopes_rad = np.arctan(
+                            np.abs(np.gradient(elev_arr, dist_arr))
+                        )
+                        slopes_deg = np.degrees(slopes_rad)
+                        max_slope  = np.nanmax(slopes_deg)
+
+                        if max_slope >= slope_threshold_deg:
+                            confined = True
+
+                    if confined:
+                        confined_count += 1
+
+            if total_count > 0:
+                pct = (confined_count / total_count) * 100
+            else:
+                pct = np.nan
+
+            confinement_pct.append(pct)
+
+    return pd.Series(confinement_pct,
+                     index=sword_gdf.index,
+                     name="confinement_pct_rinaldi")
